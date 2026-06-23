@@ -1,0 +1,16 @@
+[
+  {
+    "name": "Aクリニック",
+    "commission": "承認後 30,000円",
+    "approval_terms": "初回カウンセリング完了後に承認。詳細はASP管理画面で確認。",
+    "available_claims": "症例数、無料相談、オンライン相談",
+    "ng_claims": "効果保証、治療結果の断定"
+  },
+  {
+    "name": "Bクリニック",
+    "commission": "承認後 24,000円",
+    "approval_terms": "来院予約後の有効来院で承認。重複・キャンセルは非承認。",
+    "available_claims": "料金プラン、保証制度、駅近",
+    "ng_claims": "最安値断定、No.1表現"
+  }
+]

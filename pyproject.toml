@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "competitor-block-capture"
+version = "0.1.0"
+description = "Capture semantic visual blocks from competitor comparison listing LPs and sync them to Notion"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+browser = ["playwright>=1.45"]
+web = ["fastapi>=0.115", "uvicorn>=0.30"]
+
+[project.scripts]
+research-os = "research_os.cli:main"
+listing-os = "listing_os.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["listing_os*", "research_os*"]

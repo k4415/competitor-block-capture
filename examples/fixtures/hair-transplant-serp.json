@@ -1,0 +1,27 @@
+{
+  "genre_id": "hair-transplant",
+  "query": "植毛 比較",
+  "results": [
+    {
+      "rank": 1,
+      "type": "organic",
+      "url": "https://www.example-hair.jp/ranking?utm_source=google",
+      "title": "植毛おすすめ比較",
+      "description": "料金・実績・症例・口コミで自毛植毛クリニックを比較"
+    },
+    {
+      "rank": 2,
+      "type": "organic",
+      "url": "https://hair-compare.test/",
+      "title": "自毛植毛クリニックランキング",
+      "description": "費用、保証、無料相談、通いやすさを一覧比較"
+    },
+    {
+      "rank": 4,
+      "type": "paid",
+      "url": "https://example-hair.jp/lp?gclid=sample",
+      "title": "植毛クリニック無料相談",
+      "description": "症例多数、オンライン相談対応"
+    }
+  ]
+}

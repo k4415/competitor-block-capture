@@ -1,0 +1,22 @@
+{
+  "version": "v1",
+  "rules": [
+    {
+      "id": "rule-example-product-detail-label",
+      "status": "approved",
+      "scope": {
+        "level": "global"
+      },
+      "action": "label_override",
+      "match": {
+        "detail_label": ["一括比較表"],
+        "text_contains": ["料金プラン", "矯正範囲", "エリア"]
+      },
+      "effect": {
+        "major_category": "個別候補詳細",
+        "detail_label": "個別候補の詳細比較"
+      },
+      "source_feedback": "1商品ずつの詳細表は一括比較表ではなく個別候補詳細として扱う"
+    }
+  ]
+}

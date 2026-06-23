@@ -12,15 +12,19 @@ python3 -m research_os capture-blocks \
   --out artifacts/block-capture-dry-run.json
 ```
 
-## Notionへ保存
+## ユーザーOK後にNotionへ保存
+
+dry-runで作成された画像を確認し、ユーザーからOKをもらった後に実行します。このコマンドは各画像から `image_text` と `Template_image_text` を生成して、画像と一緒にNotionへ保存します。
 
 ```bash
-python3 -m research_os capture-blocks \
+python3 -m research_os finalize-block-capture \
+  --run-artifact artifacts/block-capture-dry-run.json \
   --category-name マウスピース矯正 \
-  --competitor-url https://example.com/ \
-  --reference-review \
-  --out artifacts/block-capture-notion.json
+  --confirm-reviewed \
+  --out artifacts/block-capture-finalized.json
 ```
+
+`--confirm-reviewed` は、ユーザーが画像素材を確認してOKしたことを明示するための必須フラグです。`OPENAI_API_KEY` が未設定の場合、この承認後保存は停止します。
 
 ## 複数URLをまとめて実行
 
@@ -30,8 +34,9 @@ python3 -m research_os capture-blocks \
 python3 -m research_os capture-blocks \
   --category-name マウスピース矯正 \
   --competitor-url-file urls.txt \
+  --dry-run \
   --reference-review \
-  --out artifacts/block-capture-notion.json
+  --out artifacts/block-capture-dry-run.json
 ```
 
 ## 参照レビューだけ厳しくする
@@ -53,7 +58,7 @@ python3 -m research_os capture-blocks \
 
 ```bash
 python3 -m research_os learn-block-feedback \
-  --run-artifact artifacts/block-capture-notion.json \
+  --run-artifact artifacts/block-capture-finalized.json \
   --feedback-file feedback.txt \
   --out learning/pending_rules.json
 ```

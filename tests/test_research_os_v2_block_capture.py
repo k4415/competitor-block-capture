@@ -1,8 +1,12 @@
 import argparse
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
 from research_os.cli import build_parser
+from research_os.v2.block_finalize import finalize_block_capture
+from research_os.v2.block_image_text import apply_image_text_prompts
 from research_os.v2.block_capture import (
     CANDIDATE_SELECTOR_PARTS,
     RawBlockCandidate,
@@ -63,6 +67,78 @@ def _captured_block_for_review(
         selector=selector,
         status="取得済み",
     )
+
+
+def _rich_text_plain(prop: dict) -> str:
+    return "".join(item.get("plain_text") or item.get("text", {}).get("content", "") for item in prop.get("rich_text", []))
+
+
+def _child_plain_text(child: dict) -> str:
+    child_type = child.get("type", "")
+    rich_text = (child.get(child_type) or {}).get("rich_text") or []
+    return "".join(item.get("plain_text") or item.get("text", {}).get("content", "") for item in rich_text)
+
+
+class FakeImageTextClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[CapturedBlock, str]] = []
+
+    def available(self) -> bool:
+        return True
+
+    def generate(self, block: CapturedBlock, *, category_name: str) -> dict[str, str]:
+        self.calls.append((block, category_name))
+        return {
+            "image_text": json.dumps(
+                {
+                    "basic": {"aspectRatio": "1:1", "size": "1080x1080px"},
+                    "globalDesign": {"style": "比較リスティング広告"},
+                    "colorScheme": {"main": "#0066CC"},
+                    "zones": [{"name": "Hero", "elements": [{"type": "text", "content": "スマイルモア矯正"}]}],
+                    "reproduction": {"keyPoints": ["元画像に近い構図"]},
+                },
+                ensure_ascii=False,
+            ),
+            "Template_image_text": json.dumps(
+                {
+                    "basic": {"aspectRatio": "1:1", "size": "1080x1080px"},
+                    "globalDesign": {"style": "比較リスティング広告"},
+                    "colorScheme": {"main": "{メインカラー}"},
+                    "zones": [{"name": "Hero", "elements": [{"type": "text", "content": "{サービス名}"}]}],
+                    "reproduction": {"keyPoints": ["{ジャンル名}の比較素材として再利用できる構図"]},
+                },
+                ensure_ascii=False,
+            ),
+        }
+
+
+class UnavailableImageTextClient(FakeImageTextClient):
+    def available(self) -> bool:
+        return False
+
+
+class FakeBlockNotion:
+    def __init__(self) -> None:
+        self.created_pages: list[dict] = []
+        self.uploaded_paths: list[str] = []
+
+    def retrieve_database(self, database_id: str) -> dict:
+        return {"data_sources": [{"id": "ds-test"}], "properties": {"名前": {"title": {}}}}
+
+    def retrieve_data_source(self, data_source_id: str) -> dict:
+        return {"properties": {"名前": {"title": {}}}}
+
+    def update_data_source(self, data_source_id: str, payload: dict) -> dict:
+        return {"id": data_source_id, **payload}
+
+    def upload_file(self, file_path: str) -> str:
+        self.uploaded_paths.append(str(file_path))
+        return f"upload-{len(self.uploaded_paths)}"
+
+    def create_page(self, data_source_id: str, properties: dict, children=None) -> dict:
+        page_id = f"page-{len(self.created_pages) + 1}"
+        self.created_pages.append({"id": page_id, "data_source_id": data_source_id, "properties": properties, "children": children or []})
+        return {"id": page_id}
 
 
 class BlockCaptureHeuristicsTest(unittest.TestCase):
@@ -1751,6 +1827,8 @@ class BlockNotionPayloadTest(unittest.TestCase):
         self.assertEqual(payload["properties"]["元URL"], {"url": {}})
         self.assertEqual(payload["properties"]["ブロック順"], {"number": {}})
         self.assertEqual(payload["properties"]["ブロック画像"], {"files": {}})
+        self.assertEqual(payload["properties"]["image_text"], {"rich_text": {}})
+        self.assertEqual(payload["properties"]["Template_image_text"], {"rich_text": {}})
         self.assertEqual(payload["properties"]["参照一致度"], {"number": {"format": "number"}})
         self.assertIn("ファーストビュー", [option["name"] for option in payload["properties"]["ブロック大分類"]["select"]["options"]])
         self.assertIn("一括比較表", [option["name"] for option in payload["properties"]["詳細ラベル"]["select"]["options"]])
@@ -1761,6 +1839,8 @@ class BlockNotionPayloadTest(unittest.TestCase):
         self.assertIn("個別候補の詳細比較", [option["name"] for option in required["詳細ラベル"]["select"]["options"]])
 
     def test_page_properties_and_children_attach_uploaded_image(self):
+        long_image_text = json.dumps({"basic": {"size": "1080x1080px"}, "detail": "A" * 2400}, ensure_ascii=False)
+        template_text = json.dumps({"basic": {"size": "1080x1080px"}, "service": "{サービス名}"}, ensure_ascii=False)
         block = CapturedBlock(
             name="結婚相談所 Example 001 ファーストビュー結論",
             source_url="https://example.com/ranking/",
@@ -1784,6 +1864,8 @@ class BlockNotionPayloadTest(unittest.TestCase):
             reference_similarity=0.42,
             reference_review_note="over_merged",
             reference_run_ids=("ref-run",),
+            image_text=long_image_text,
+            template_image_text=template_text,
         )
 
         properties = block_page_properties(block, file_upload_id="upload-123")
@@ -1795,8 +1877,185 @@ class BlockNotionPayloadTest(unittest.TestCase):
         self.assertEqual(properties["参照レビュー状態"]["select"]["name"], "要確認")
         self.assertEqual(properties["参照一致度"]["number"], 0.42)
         self.assertIn("over_merged", properties["参照レビュー"]["rich_text"][0]["text"]["content"])
+        self.assertGreater(len(properties["image_text"]["rich_text"]), 1)
+        self.assertEqual(_rich_text_plain(properties["image_text"]), long_image_text)
+        self.assertEqual(_rich_text_plain(properties["Template_image_text"]), template_text)
         self.assertEqual(children[0]["type"], "image")
         self.assertEqual(children[0]["image"]["file_upload"]["id"], "upload-123")
+        child_text = "\n".join(_child_plain_text(child) for child in children)
+        self.assertIn("image_text", child_text)
+        self.assertIn("Template_image_text", child_text)
+
+
+class BlockImageTextPromptTest(unittest.TestCase):
+    def test_apply_image_text_prompts_uses_client_payloads(self):
+        block = _captured_block_for_review(
+            order=1,
+            selector="body > section.hero",
+            y=0,
+            height=390,
+            label="ファーストビュー結論",
+            structure_memo="Hero image",
+        )
+        client = FakeImageTextClient()
+
+        result = apply_image_text_prompts([block], category_name="マウスピース矯正", client=client)
+
+        self.assertEqual(len(client.calls), 1)
+        self.assertIn('"basic"', result[0].image_text)
+        self.assertIn('"globalDesign"', result[0].image_text)
+        self.assertIn('"zones"', result[0].image_text)
+        self.assertIn('"reproduction"', result[0].image_text)
+        self.assertIn("{サービス名}", result[0].template_image_text)
+        self.assertNotIn("スマイルモア矯正", result[0].template_image_text)
+
+
+class FinalizeBlockCaptureTest(unittest.TestCase):
+    def test_finalize_generates_image_text_and_saves_reviewed_blocks_to_notion(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            image_path = root / "block-001.png"
+            image_path.write_bytes(b"fake image bytes")
+            artifact_path = root / "dry-run.json"
+            out_path = root / "finalized.json"
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "version": "v2-block-capture",
+                        "dry_run": True,
+                        "category_name": "マウスピース矯正",
+                        "run": {
+                            "run_id": "run-test",
+                            "urls": ["https://example.com/"],
+                            "viewport": "mobile-390",
+                            "failed_urls": [],
+                            "blocks": [
+                                {
+                                    "name": "Example 001",
+                                    "source_url": "https://example.com/",
+                                    "domain": "example.com",
+                                    "page_title": "Example",
+                                    "run_id": "run-test",
+                                    "viewport": "mobile-390",
+                                    "order": 1,
+                                    "major_category": "ファーストビュー",
+                                    "detail_label": "ファーストビュー結論",
+                                    "screenshot_path": str(image_path),
+                                    "structure_memo": "selector=hero",
+                                    "image_prompt": "",
+                                    "prompt_state": "未生成",
+                                    "confidence": "高",
+                                    "extracted_at": "2026-06-23T00:00:00+00:00",
+                                    "clip": {"x": 0, "y": 0, "width": 390, "height": 390},
+                                    "selector": "body > section.hero",
+                                    "status": "取得済み",
+                                }
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            notion = FakeBlockNotion()
+            client = FakeImageTextClient()
+
+            result = finalize_block_capture(
+                run_artifact_path=artifact_path,
+                category_name="マウスピース矯正",
+                notion=notion,
+                database_id="db-test",
+                confirm_reviewed=True,
+                client=client,
+                out_path=out_path,
+            )
+
+            self.assertEqual(result["run"]["block_count"], 1)
+            self.assertEqual(result["notion"]["row_ids"], ["page-1"])
+            self.assertEqual(notion.uploaded_paths, [str(image_path)])
+            created = notion.created_pages[0]["properties"]
+            self.assertIn("{サービス名}", _rich_text_plain(created["Template_image_text"]))
+            self.assertIn('"basic"', _rich_text_plain(created["image_text"]))
+            saved = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["version"], "v2-block-capture-finalized")
+            self.assertIn('"zones"', saved["run"]["blocks"][0]["image_text"])
+
+    def test_finalize_requires_explicit_review_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "dry-run.json"
+            artifact_path.write_text(json.dumps({"run": {"blocks": []}}), encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "confirm-reviewed"):
+                finalize_block_capture(
+                    run_artifact_path=artifact_path,
+                    category_name="結婚相談所",
+                    notion=FakeBlockNotion(),
+                    database_id="db-test",
+                    confirm_reviewed=False,
+                    client=FakeImageTextClient(),
+                )
+
+    def test_finalize_fails_before_notion_when_openai_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "dry-run.json"
+            artifact_path.write_text(json.dumps({"run": {"blocks": []}}), encoding="utf-8")
+            notion = FakeBlockNotion()
+
+            with self.assertRaisesRegex(RuntimeError, "OPENAI_API_KEY"):
+                finalize_block_capture(
+                    run_artifact_path=artifact_path,
+                    category_name="結婚相談所",
+                    notion=notion,
+                    database_id="db-test",
+                    confirm_reviewed=True,
+                    client=UnavailableImageTextClient(),
+                )
+            self.assertEqual(notion.created_pages, [])
+
+    def test_finalize_fails_when_acquired_block_screenshot_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "dry-run.json"
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "run": {
+                            "blocks": [
+                                {
+                                    "name": "Missing",
+                                    "source_url": "https://example.com/",
+                                    "domain": "example.com",
+                                    "page_title": "Example",
+                                    "run_id": "run-test",
+                                    "viewport": "mobile-390",
+                                    "order": 1,
+                                    "major_category": "その他",
+                                    "detail_label": "その他",
+                                    "screenshot_path": str(Path(tmpdir) / "missing.png"),
+                                    "structure_memo": "",
+                                    "image_prompt": "",
+                                    "prompt_state": "未生成",
+                                    "confidence": "低",
+                                    "extracted_at": "2026-06-23T00:00:00+00:00",
+                                    "clip": {"x": 0, "y": 0, "width": 390, "height": 1},
+                                    "selector": "body",
+                                    "status": "取得済み",
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "screenshot"):
+                finalize_block_capture(
+                    run_artifact_path=artifact_path,
+                    category_name="結婚相談所",
+                    notion=FakeBlockNotion(),
+                    database_id="db-test",
+                    confirm_reviewed=True,
+                    client=FakeImageTextClient(),
+                )
 
 
 class BlockPromptingTest(unittest.TestCase):
@@ -1870,6 +2129,28 @@ class CaptureBlocksCliTest(unittest.TestCase):
         self.assertEqual(args.command, "learn-block-feedback")
         self.assertEqual(args.run_artifact, "artifacts/latest.json")
         self.assertEqual(args.feedback_file, "feedback.txt")
+
+    def test_parser_accepts_finalize_block_capture_command(self):
+        args = build_parser().parse_args(
+            [
+                "finalize-block-capture",
+                "--run-artifact",
+                "artifacts/dry-run.json",
+                "--notion-database-id",
+                "db-test",
+                "--category-name",
+                "マウスピース矯正",
+                "--confirm-reviewed",
+                "--out",
+                "artifacts/finalized.json",
+            ]
+        )
+
+        self.assertEqual(args.command, "finalize-block-capture")
+        self.assertEqual(args.run_artifact, "artifacts/dry-run.json")
+        self.assertEqual(args.notion_database_id, "db-test")
+        self.assertEqual(args.category_name, "マウスピース矯正")
+        self.assertTrue(args.confirm_reviewed)
 
 
 if __name__ == "__main__":

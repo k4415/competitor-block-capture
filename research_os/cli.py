@@ -15,6 +15,7 @@ from .runner import ResearchRequest, collect_research_bundle
 from .sources import load_source_documents
 from .v2.notion_workspace import create_v2_research_workspace
 from .v2.block_capture import capture_competitor_blocks, review_captured_blocks
+from .v2.block_finalize import finalize_block_capture
 from .v2.block_learning import apply_approved_learning_rules, load_approved_learning_rules, write_feedback_learning_payload
 from .v2.block_notion import sync_captured_blocks_to_notion
 from .v2.block_prompting import analyze_blocks
@@ -89,6 +90,14 @@ def build_parser() -> argparse.ArgumentParser:
     learn_feedback.add_argument("--feedback-file", required=True)
     learn_feedback.add_argument("--out", default="learning/pending_rules.json")
     learn_feedback.set_defaults(func=cmd_learn_block_feedback)
+
+    finalize_blocks = subcommands.add_parser("finalize-block-capture", help="Generate approved image prompts and save captured blocks to Notion")
+    finalize_blocks.add_argument("--run-artifact", required=True)
+    finalize_blocks.add_argument("--category-name", required=True)
+    finalize_blocks.add_argument("--notion-database-id", default=os.getenv("COMPETITOR_BLOCK_DB_ID", ""))
+    finalize_blocks.add_argument("--confirm-reviewed", action="store_true")
+    finalize_blocks.add_argument("--out", default="artifacts/research-os-v2-block-capture-finalized.json")
+    finalize_blocks.set_defaults(func=cmd_finalize_block_capture)
     return parser
 
 
@@ -247,6 +256,29 @@ def cmd_capture_blocks(args: argparse.Namespace) -> int:
 
 def cmd_learn_block_feedback(args: argparse.Namespace) -> int:
     write_feedback_learning_payload(run_artifact_path=args.run_artifact, feedback_file=args.feedback_file, out=args.out)
+    print(args.out)
+    return 0
+
+
+def cmd_finalize_block_capture(args: argparse.Namespace) -> int:
+    if not args.confirm_reviewed:
+        raise SystemExit("--confirm-reviewed is required after the user approves the dry-run output")
+    token = os.getenv("NOTION_API_KEY")
+    if not token:
+        raise SystemExit("NOTION_API_KEY is required")
+    if not args.notion_database_id:
+        raise SystemExit("COMPETITOR_BLOCK_DB_ID or --notion-database-id is required")
+    try:
+        finalize_block_capture(
+            run_artifact_path=args.run_artifact,
+            category_name=args.category_name,
+            notion=NotionClient(token),
+            database_id=args.notion_database_id,
+            confirm_reviewed=args.confirm_reviewed,
+            out_path=args.out,
+        )
+    except RuntimeError as error:
+        raise SystemExit(str(error)) from error
     print(args.out)
     return 0
 

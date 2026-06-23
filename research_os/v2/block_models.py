@@ -100,6 +100,8 @@ class CapturedBlock:
     clip: dict[str, float]
     selector: str
     status: str
+    image_text: str = ""
+    template_image_text: str = ""
     reference_review_status: str = "参照なし"
     reference_similarity: float | None = None
     reference_review_note: str = ""

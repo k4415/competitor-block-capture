@@ -20,7 +20,9 @@ OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
 ```
 
-`OPENAI_API_KEY` は任意です。未設定の場合、画像の構造メモと画像生成プロンプトのAI補助はスキップされますが、素材の切り出し自体は実行できます。
+`OPENAI_API_KEY` は、素材の切り出しだけなら任意です。未設定の場合、構造メモと従来の画像生成プロンプトのAI補助はスキップされます。
+
+ただし、ユーザーOK後に `finalize-block-capture` で `image_text` / `Template_image_text` を生成してNotion保存する場合は必須です。
 
 ## 3. Notion側を準備する
 

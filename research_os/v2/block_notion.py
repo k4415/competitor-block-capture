@@ -7,6 +7,9 @@ from typing import Any
 from .block_models import CapturedBlock, DETAIL_LABEL_OPTIONS, MAJOR_CATEGORY_OPTIONS
 
 
+RICH_TEXT_CHUNK_SIZE = 1900
+
+
 def required_block_database_properties() -> dict[str, Any]:
     return {
         "名前": {"title": {}},
@@ -21,6 +24,8 @@ def required_block_database_properties() -> dict[str, Any]:
         "ブロック画像": {"files": {}},
         "構造メモ": {"rich_text": {}},
         "画像生成プロンプト": {"rich_text": {}},
+        "image_text": {"rich_text": {}},
+        "Template_image_text": {"rich_text": {}},
         "プロンプト状態": {"select": {"options": _options(["生成済み", "未生成", "失敗"])}},
         "信頼度": {"select": {"options": _options(["高", "中", "低"])}},
         "抽出日時": {"date": {}},
@@ -98,6 +103,8 @@ def block_page_properties(block: CapturedBlock, *, file_upload_id: str | None) -
         "ブロック画像": _files(block, file_upload_id),
         "構造メモ": _rich_text(block.structure_memo),
         "画像生成プロンプト": _rich_text(block.image_prompt),
+        "image_text": _rich_text(block.image_text),
+        "Template_image_text": _rich_text(block.template_image_text),
         "プロンプト状態": _select(block.prompt_state),
         "信頼度": _select(block.confidence),
         "抽出日時": {"date": {"start": block.extracted_at}},
@@ -132,6 +139,12 @@ def block_page_children(block: CapturedBlock, *, file_upload_id: str | None) -> 
     ]:
         if body:
             children.append(_paragraph(f"{title}: {body}"))
+    for title, body in [
+        ("image_text", block.image_text),
+        ("Template_image_text", block.template_image_text),
+    ]:
+        if body:
+            children.extend(_section_blocks(title, body))
     return children
 
 
@@ -157,8 +170,8 @@ def _title(text: str) -> dict[str, Any]:
 
 
 def _rich_text(text: str) -> dict[str, Any]:
-    content = _truncate(text, 2000)
-    return {"rich_text": [{"type": "text", "text": {"content": content}}]} if content else {"rich_text": []}
+    chunks = _text_chunks(str(text), RICH_TEXT_CHUNK_SIZE)
+    return {"rich_text": [{"type": "text", "text": {"content": chunk}} for chunk in chunks]} if chunks else {"rich_text": []}
 
 
 def _select(name: str) -> dict[str, Any]:
@@ -188,6 +201,28 @@ def _paragraph(text: str) -> dict[str, Any]:
     }
 
 
+def _section_blocks(title: str, body: str) -> list[dict[str, Any]]:
+    blocks = [_heading_3(title)]
+    blocks.extend(_paragraph_chunk(chunk) for chunk in _text_chunks(body, RICH_TEXT_CHUNK_SIZE))
+    return blocks
+
+
+def _heading_3(text: str) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "heading_3",
+        "heading_3": {"rich_text": [{"type": "text", "text": {"content": _truncate(text, 2000)}}]},
+    }
+
+
+def _paragraph_chunk(text: str) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]},
+    }
+
+
 def _options(names: list[str]) -> list[dict[str, str]]:
     return [{"name": name} for name in names]
 
@@ -197,3 +232,10 @@ def _truncate(text: str, max_length: int) -> str:
     if len(cleaned) <= max_length:
         return cleaned
     return cleaned[: max_length - 1].rstrip() + "…"
+
+
+def _text_chunks(text: str, chunk_size: int) -> list[str]:
+    cleaned = str(text or "")
+    if not cleaned:
+        return []
+    return [cleaned[index : index + chunk_size] for index in range(0, len(cleaned), chunk_size)]

@@ -19,6 +19,8 @@ MAX_NOTION_DIRECT_UPLOAD_BYTES = 20 * 1024 * 1024
 PNG_TO_JPEG_THRESHOLD_BYTES = 18 * 1024 * 1024
 MAX_VIEWPORT_SCREENSHOT_HEIGHT = 3600
 OVERSIZED_PARENT_HEIGHT = 2400
+WORDPRESS_EXPLAINER_RUN_MAX_HEIGHT = 1200
+WORDPRESS_PRODUCT_RUN_MAX_HEIGHT = 900
 CANDIDATE_SELECTOR_PARTS = [
     "header",
     "main > section",
@@ -156,6 +158,7 @@ def select_semantic_blocks(
     filtered = [_normalize_candidate(candidate) for candidate in candidates if _candidate_is_usable(candidate)]
     filtered.sort(key=lambda candidate: (candidate.y, 1 if "::first-view" in candidate.selector else 0, -candidate.height, candidate.selector))
     filtered = _cap_synthetic_first_view(filtered)
+    filtered = _prefer_nested_first_view_hero_image(filtered)
     filtered = _drop_nested_first_view_children(filtered)
     filtered = _tighten_per_item_card_bounds(filtered)
     filtered = _drop_children_of_per_item_cards(filtered)
@@ -209,6 +212,8 @@ def select_semantic_blocks(
 def classify_candidate(candidate: RawBlockCandidate, *, order: int) -> Classification:
     haystack = " ".join([candidate.tag, candidate.class_name, candidate.element_id, candidate.text]).lower()
     japanese = candidate.text
+    if _is_promoted_first_view_hero(candidate):
+        return Classification("ファーストビュー", "ファーストビュー結論", "高")
     if _is_ranking_basic_info_candidate(candidate):
         return Classification("個別候補詳細", "個別候補の基本情報", "高")
     if _is_ranking_case_candidate(candidate):
@@ -221,6 +226,8 @@ def classify_candidate(candidate: RawBlockCandidate, *, order: int) -> Classific
         return Classification("個別候補詳細", "店舗/地域一覧", "高")
     if _is_review_candidate(candidate):
         return Classification("個別候補詳細", "口コミ/体験談", "高")
+    if _is_wordpress_product_evidence_candidate(candidate):
+        return Classification("個別候補詳細", "口コミ/体験談", "中")
     if _is_limited_offer_candidate(candidate):
         return Classification("クロージング", "限定オファー", "高")
     if _is_rank_cta_candidate(candidate):
@@ -231,6 +238,8 @@ def classify_candidate(candidate: RawBlockCandidate, *, order: int) -> Classific
         return Classification("個別候補詳細", "個別候補の基本情報", "高")
     if _is_single_product_detail_table(candidate):
         return Classification("個別候補詳細", "個別候補の詳細比較", "高")
+    if _is_wordpress_multi_product_table_candidate(candidate):
+        return Classification("比較表", "一括比較表", "高")
     if _is_selection_criteria_candidate(candidate):
         return Classification("選び方・評価基準", "選び方3〜5ポイント", "高")
     if _is_wordpress_product_detail_candidate(candidate):
@@ -531,6 +540,44 @@ def _drop_nested_first_view_children(candidates: list[RawBlockCandidate]) -> lis
     return output
 
 
+def _prefer_nested_first_view_hero_image(candidates: list[RawBlockCandidate]) -> list[RawBlockCandidate]:
+    first_views = [candidate for candidate in candidates if candidate.selector == "body::first-view"]
+    if not first_views:
+        return candidates
+    first_view = first_views[0]
+    hero_candidates = [
+        candidate
+        for candidate in candidates
+        if _is_nested_wordpress_first_view_hero(candidate, first_view)
+    ]
+    if not hero_candidates:
+        return candidates
+    hero = min(hero_candidates, key=lambda candidate: candidate.y)
+    output: list[RawBlockCandidate] = []
+    for candidate in candidates:
+        if candidate.selector == first_view.selector:
+            continue
+        if candidate is hero:
+            output.append(replace(candidate, class_name=" ".join([candidate.class_name, "first-view-hero"]).strip()))
+            continue
+        output.append(candidate)
+    return output
+
+
+def _is_nested_wordpress_first_view_hero(candidate: RawBlockCandidate, first_view: RawBlockCandidate) -> bool:
+    if candidate.selector == first_view.selector:
+        return False
+    if not _is_wordpress_explainer_image_candidate(candidate):
+        return False
+    if candidate.y < first_view.y + 40 or candidate.y > first_view.y + 420:
+        return False
+    if candidate.bottom > first_view.bottom + 1:
+        return False
+    if candidate.width < VIEWPORT["width"] * 0.75 or candidate.height < 160:
+        return False
+    return True
+
+
 def _drop_children_of_per_item_cards(candidates: list[RawBlockCandidate]) -> list[RawBlockCandidate]:
     per_item_cards = [candidate for candidate in candidates if _is_per_item_comparison_card(candidate)]
     if not per_item_cards:
@@ -686,13 +733,20 @@ def _merge_into_primary(primary: RawBlockCandidate, candidate: RawBlockCandidate
 def _merge_wordpress_article_runs(candidates: list[RawBlockCandidate]) -> list[RawBlockCandidate]:
     output: list[RawBlockCandidate] = []
     index = 0
+    next_image_run_is_product_evidence = False
     while index < len(candidates):
         candidate = candidates[index]
+        if _is_promoted_first_view_hero(candidate):
+            output.append(candidate)
+            index += 1
+            continue
         if not _is_wordpress_article_candidate(candidate):
             output.append(candidate)
             index += 1
             continue
 
+        is_product_evidence_run = next_image_run_is_product_evidence and _is_wordpress_explainer_image_candidate(candidate)
+        next_image_run_is_product_evidence = False
         group = [candidate]
         bottom = candidate.bottom
         next_index = index + 1
@@ -703,7 +757,13 @@ def _merge_wordpress_article_runs(candidates: list[RawBlockCandidate]) -> list[R
             if gap > max_gap:
                 break
             if _is_wordpress_article_candidate(next_candidate) and _belongs_to_same_article_run(group, next_candidate):
-                if _merged_candidate_height(group, next_candidate) > MAX_VIEWPORT_SCREENSHOT_HEIGHT - 200:
+                if _starts_wordpress_evidence_group_after_product(group, next_candidate):
+                    next_image_run_is_product_evidence = True
+                    break
+                if _starts_new_wordpress_product_group(group, next_candidate, candidates, next_index):
+                    break
+                max_height = min(MAX_VIEWPORT_SCREENSHOT_HEIGHT - 200, _wordpress_article_run_max_height(group, next_candidate))
+                if _merged_candidate_height(group, next_candidate) > max_height:
                     break
                 group.append(next_candidate)
                 bottom = max(bottom, next_candidate.bottom)
@@ -711,7 +771,10 @@ def _merge_wordpress_article_runs(candidates: list[RawBlockCandidate]) -> list[R
                 continue
             break
 
-        output.append(_merge_candidates(group) if len(group) > 1 else candidate)
+        merged = _merge_candidates(group) if len(group) > 1 else candidate
+        if is_product_evidence_run:
+            merged = replace(merged, class_name=" ".join([merged.class_name, "wordpress-product-evidence"]).strip())
+        output.append(merged)
         index = next_index
     return output
 
@@ -722,6 +785,8 @@ def _is_wordpress_article_candidate(candidate: RawBlockCandidate) -> bool:
 
 
 def _belongs_to_same_article_run(group: list[RawBlockCandidate], candidate: RawBlockCandidate) -> bool:
+    if _is_promoted_first_view_hero(candidate) or any(_is_promoted_first_view_hero(item) for item in group):
+        return False
     text = " ".join([item.text for item in group] + [candidate.text])
     if all(_is_wordpress_explainer_image_candidate(item) for item in [*group, candidate]):
         return True
@@ -736,6 +801,39 @@ def _wordpress_article_run_max_gap(group: list[RawBlockCandidate], candidate: Ra
     if all(_is_wordpress_explainer_image_candidate(item) for item in [*group, candidate]):
         return 450
     return 180
+
+
+def _wordpress_article_run_max_height(group: list[RawBlockCandidate], candidate: RawBlockCandidate) -> int:
+    items = [*group, candidate]
+    if any(_is_product_feature_card(item) or _is_wordpress_product_detail_candidate(item) for item in items):
+        return WORDPRESS_PRODUCT_RUN_MAX_HEIGHT
+    if all(_is_wordpress_explainer_image_candidate(item) for item in items):
+        return WORDPRESS_EXPLAINER_RUN_MAX_HEIGHT
+    return WORDPRESS_EXPLAINER_RUN_MAX_HEIGHT
+
+
+def _starts_new_wordpress_product_group(
+    group: list[RawBlockCandidate],
+    candidate: RawBlockCandidate,
+    candidates: list[RawBlockCandidate],
+    candidate_index: int,
+) -> bool:
+    if not group or not _is_wordpress_explainer_image_candidate(candidate):
+        return False
+    if any(_is_product_feature_card(item) for item in group):
+        return False
+    if candidate_index + 1 >= len(candidates):
+        return False
+    next_candidate = candidates[candidate_index + 1]
+    if not _is_product_feature_card(next_candidate):
+        return False
+    if next_candidate.y - candidate.bottom > 140:
+        return False
+    return True
+
+
+def _starts_wordpress_evidence_group_after_product(group: list[RawBlockCandidate], candidate: RawBlockCandidate) -> bool:
+    return any(_is_product_feature_card(item) for item in group) and _is_wordpress_explainer_image_candidate(candidate)
 
 
 def _merged_candidate_height(group: list[RawBlockCandidate], candidate: RawBlockCandidate) -> float:
@@ -823,6 +921,21 @@ def _is_single_product_detail_table(candidate: RawBlockCandidate) -> bool:
     return sum(1 for label in labels if label in haystack) >= 4
 
 
+def _is_wordpress_multi_product_table_candidate(candidate: RawBlockCandidate) -> bool:
+    context = " ".join([candidate.tag, candidate.selector, candidate.class_name, candidate.element_id, candidate.text])
+    if not _is_wordpress_article_candidate(candidate):
+        return False
+    if not _contains_any(context, ["wp-block-table", "scroll-hint", "has-fixed-layout"]):
+        return False
+    rank_labels = ["第1位", "第2位", "第3位", "第4位", "第5位"]
+    product_labels = ["スマイルモア矯正", "キレイライン矯正", "ウィスマイル", "ウィ・スマイル", "Oh my teeth", "ディパール"]
+    return (
+        sum(1 for label in rank_labels if label in context) >= 3
+        and sum(1 for label in product_labels if label in context) >= 2
+        and _contains_any(context, ["総合評価", "費用", "公式サイト"])
+    )
+
+
 def _is_selection_criteria_candidate(candidate: RawBlockCandidate) -> bool:
     return _contains_any(candidate.text, ["選び方", "選ぶ理由", "失敗しない", "クリニック選び", "重要"])
 
@@ -837,6 +950,14 @@ def _is_wordpress_product_detail_candidate(candidate: RawBlockCandidate) -> bool
         candidate.text,
         ["スマイルモア矯正", "ウィ・スマイル", "ウィスマイル", "キレイライン矯正", "インビザライン", "月額", "特徴"],
     )
+
+
+def _is_promoted_first_view_hero(candidate: RawBlockCandidate) -> bool:
+    return _contains_any(candidate.class_name, ["first-view-hero"])
+
+
+def _is_wordpress_product_evidence_candidate(candidate: RawBlockCandidate) -> bool:
+    return _contains_any(candidate.class_name, ["wordpress-product-evidence"])
 
 
 def _is_ranking_candidate(candidate: RawBlockCandidate) -> bool:

@@ -473,7 +473,7 @@ class BlockCaptureHeuristicsTest(unittest.TestCase):
         self.assertIn("main#main_content > div > div > figure", CANDIDATE_SELECTOR_PARTS)
         self.assertIn("main#main_content > div > div > div.wp-block-sbd-checkpoint-block", CANDIDATE_SELECTOR_PARTS)
 
-    def test_select_semantic_blocks_drops_wordpress_figure_nested_in_first_view(self):
+    def test_select_semantic_blocks_promotes_wordpress_figure_nested_in_first_view(self):
         candidates = [
             RawBlockCandidate(
                 selector="body::first-view",
@@ -534,11 +534,12 @@ class BlockCaptureHeuristicsTest(unittest.TestCase):
         self.assertEqual(
             [block.selector for block in blocks],
             [
-                "body::first-view",
+                "body > main#main_content > div > div > figure:nth-of-type(1)",
                 "body > main#main_content > div > div > figure:nth-of-type(15)",
                 "body > main#main_content > div > div > div:nth-of-type(2)",
             ],
         )
+        self.assertEqual("ファーストビュー結論", blocks[0].detail_label)
 
     def test_select_semantic_blocks_keeps_per_item_comparison_cards_separate(self):
         candidates = [
@@ -655,6 +656,34 @@ class BlockCaptureHeuristicsTest(unittest.TestCase):
         product_blocks = [block for block in blocks if block.detail_label == "個別候補の詳細比較"]
         self.assertEqual(["個別候補詳細", "個別候補詳細"], [block.major_category for block in product_blocks])
         self.assertEqual(["個別候補の詳細比較", "個別候補の詳細比較"], [block.detail_label for block in product_blocks])
+
+    def test_select_semantic_blocks_classifies_wordpress_multi_product_table_as_comparison(self):
+        candidates = [
+            RawBlockCandidate(
+                selector="body > main#main_content > div > div > figure:nth-of-type(15)",
+                tag="figure",
+                text="第1位 第2位 第3位 第4位 第5位 マウスピース矯正 スマイルモア矯正 キレイライン矯正 ウィスマイル矯正 Oh my teeth 総合評価 97点/100 クリニック数 治療期間 費用 公式サイト",
+                x=16,
+                y=5768,
+                width=359,
+                height=1016,
+                class_name="wp-block-table wp-block-sbd-table",
+                element_id="",
+            ),
+        ]
+
+        blocks = select_semantic_blocks(
+            url="https://mouthpiece-best.com/mouthpiece-tokyo-2/",
+            page_title="マウスピース東京",
+            category_name="比較リスティング",
+            run_id="test-run",
+            candidates=candidates,
+            screenshot_dir=Path("tmp"),
+            max_blocks=10,
+        )
+
+        self.assertEqual("比較表", blocks[0].major_category)
+        self.assertEqual("一括比較表", blocks[0].detail_label)
 
     def test_select_semantic_blocks_keeps_visual_children_when_selector_is_not_descendant_of_oversized_parent(self):
         candidates = [
@@ -973,10 +1002,11 @@ class BlockCaptureHeuristicsTest(unittest.TestCase):
             max_blocks=10,
         )
 
-        self.assertEqual(1, len(blocks))
+        self.assertEqual(2, len(blocks))
         self.assertEqual("個別候補詳細", blocks[0].major_category)
         self.assertEqual("個別候補の基本情報", blocks[0].detail_label)
-        self.assertEqual(792, blocks[0].clip["height"])
+        self.assertEqual(680, blocks[0].clip["height"])
+        self.assertEqual(88, blocks[1].clip["height"])
 
     def test_select_semantic_blocks_groups_wordpress_explainer_image_run_with_medium_gaps(self):
         candidates = [
@@ -1040,7 +1070,7 @@ class BlockCaptureHeuristicsTest(unittest.TestCase):
         self.assertEqual(673, blocks[0].clip["height"])
         self.assertEqual(1082, blocks[1].clip["height"])
 
-    def test_select_semantic_blocks_excludes_first_view_nested_wordpress_image_from_later_run(self):
+    def test_select_semantic_blocks_prefers_nested_wordpress_hero_image_as_first_view(self):
         candidates = [
             RawBlockCandidate(
                 selector="body::first-view",
@@ -1087,7 +1117,204 @@ class BlockCaptureHeuristicsTest(unittest.TestCase):
             max_blocks=10,
         )
 
-        self.assertEqual(["body::first-view", "body > main#main_content > div > div > figure:nth-of-type(3)"], [block.selector for block in blocks])
+        self.assertEqual(
+            [
+                "body > main#main_content > div > div > figure:nth-of-type(1)",
+                "body > main#main_content > div > div > figure:nth-of-type(3)",
+            ],
+            [block.selector for block in blocks],
+        )
+        self.assertEqual("ファーストビュー結論", blocks[0].detail_label)
+        self.assertEqual({"x": 16, "y": 89, "width": 359, "height": 231}, blocks[0].clip)
+
+    def test_select_semantic_blocks_splits_wordpress_offer_before_product_feature_card(self):
+        candidates = [
+            RawBlockCandidate(
+                selector="body > main#main_content > div > div > figure:nth-of-type(24)",
+                tag="figure",
+                text="<img src='offer-ending.png'>",
+                x=16,
+                y=12351,
+                width=359,
+                height=357,
+                class_name="wp-block-image",
+                element_id="",
+            ),
+            RawBlockCandidate(
+                selector="body > main#main_content > div > div > figure:nth-of-type(25)",
+                tag="figure",
+                text="<img src='kireiline-main.png'>",
+                x=16,
+                y=12813,
+                width=359,
+                height=377,
+                class_name="wp-block-image",
+                element_id="",
+            ),
+            RawBlockCandidate(
+                selector="body > main#main_content > div > div > div:nth-of-type(5)",
+                tag="div",
+                text="キレイライン矯正の特徴 業界大手のマウスピース矯正ブランド 豊富な症例 10回コース",
+                x=16,
+                y=13221,
+                width=359,
+                height=280,
+                class_name="wp-block-sbd-checkpoint-block",
+                element_id="",
+            ),
+        ]
+
+        blocks = select_semantic_blocks(
+            url="https://mouthpiece-best.com/mouthpiece-tokyo-2/",
+            page_title="マウスピース東京",
+            category_name="比較リスティング",
+            run_id="test-run",
+            candidates=candidates,
+            screenshot_dir=Path("tmp"),
+            max_blocks=10,
+        )
+
+        self.assertEqual(2, len(blocks))
+        self.assertEqual("body > main#main_content > div > div > figure:nth-of-type(24)", blocks[0].selector)
+        self.assertEqual("個別候補の基本情報", blocks[1].detail_label)
+        self.assertEqual(688, blocks[1].clip["height"])
+
+    def test_select_semantic_blocks_splits_product_feature_from_following_evidence_images(self):
+        candidates = [
+            RawBlockCandidate(
+                selector="body > figure#smilemore",
+                tag="figure",
+                text="<img src='smilemore-main.png'>",
+                x=16,
+                y=7103,
+                width=359,
+                height=384,
+                class_name="wp-block-image",
+                element_id="smilemore",
+            ),
+            RawBlockCandidate(
+                selector="body > main#main_content > div > div > div:nth-of-type(2)",
+                tag="div",
+                text="スマイルモア矯正の特徴 最も信頼できるマウスピース矯正No.1 170,000人以上 治療実績 インビザライン 総額18.7万円",
+                x=16,
+                y=7503,
+                width=359,
+                height=280,
+                class_name="wp-block-sbd-checkpoint-block",
+                element_id="",
+            ),
+            RawBlockCandidate(
+                selector="body > main#main_content > div > div > figure:nth-of-type(17)",
+                tag="figure",
+                text="<img src='satisfaction-heading.png'>",
+                x=16,
+                y=7806,
+                width=359,
+                height=89,
+                class_name="wp-block-image",
+                element_id="",
+            ),
+            RawBlockCandidate(
+                selector="body > main#main_content > div > div > figure:nth-of-type(18)",
+                tag="figure",
+                text="<img src='satisfaction-chart.png'>",
+                x=16,
+                y=7895,
+                width=359,
+                height=280,
+                class_name="wp-block-image",
+                element_id="",
+            ),
+            RawBlockCandidate(
+                selector="body > main#main_content > div > div > figure:nth-of-type(19)",
+                tag="figure",
+                text="<img src='reviews.png'>",
+                x=16,
+                y=8176,
+                width=359,
+                height=271,
+                class_name="wp-block-image",
+                element_id="",
+            ),
+        ]
+
+        blocks = select_semantic_blocks(
+            url="https://mouthpiece-best.com/mouthpiece-tokyo-2/",
+            page_title="マウスピース東京",
+            category_name="比較リスティング",
+            run_id="test-run",
+            candidates=candidates,
+            screenshot_dir=Path("tmp"),
+            max_blocks=10,
+        )
+
+        self.assertEqual(2, len(blocks))
+        self.assertEqual("個別候補の基本情報", blocks[0].detail_label)
+        self.assertEqual(680, blocks[0].clip["height"])
+        self.assertEqual("口コミ/体験談", blocks[1].detail_label)
+        self.assertEqual(641, blocks[1].clip["height"])
+
+    def test_select_semantic_blocks_caps_long_wordpress_image_run(self):
+        candidates = [
+            RawBlockCandidate(
+                selector="body > main#main_content > div > div > figure:nth-of-type(3)",
+                tag="figure",
+                text="<img src='choice-overview.png'>",
+                x=16,
+                y=673,
+                width=359,
+                height=320,
+                class_name="wp-block-image",
+                element_id="",
+            ),
+            RawBlockCandidate(
+                selector="body > main#main_content > div > div > figure:nth-of-type(4)",
+                tag="figure",
+                text="<img src='choice-1-heading.png'>",
+                x=16,
+                y=1386,
+                width=359,
+                height=116,
+                class_name="wp-block-image",
+                element_id="",
+            ),
+            RawBlockCandidate(
+                selector="body > main#main_content > div > div > figure:nth-of-type(5)",
+                tag="figure",
+                text="<img src='choice-1-body.png'>",
+                x=16,
+                y=1503,
+                width=359,
+                height=253,
+                class_name="wp-block-image",
+                element_id="",
+            ),
+            RawBlockCandidate(
+                selector="body > main#main_content > div > div > figure:nth-of-type(6)",
+                tag="figure",
+                text="<img src='choice-2-heading.png'>",
+                x=16,
+                y=1803,
+                width=359,
+                height=111,
+                class_name="wp-block-image",
+                element_id="",
+            ),
+        ]
+
+        blocks = select_semantic_blocks(
+            url="https://mouthpiece-best.com/mouthpiece-tokyo-2/",
+            page_title="マウスピース東京",
+            category_name="比較リスティング",
+            run_id="test-run",
+            candidates=candidates,
+            screenshot_dir=Path("tmp"),
+            max_blocks=10,
+        )
+
+        self.assertEqual(2, len(blocks))
+        self.assertEqual(1083, blocks[0].clip["height"])
+        self.assertEqual("body > main#main_content > div > div > figure:nth-of-type(6)", blocks[1].selector)
 
     def test_select_semantic_blocks_splits_ibiki_ranking_card(self):
         candidates = [

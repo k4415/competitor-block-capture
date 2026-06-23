@@ -14,6 +14,7 @@ from .notion_workspace import create_research_workspace
 from .runner import ResearchRequest, collect_research_bundle
 from .sources import load_source_documents
 from .v2.notion_workspace import create_v2_research_workspace
+from .v2.block_backfill import backfill_block_image_text
 from .v2.block_capture import capture_competitor_blocks, review_captured_blocks
 from .v2.block_finalize import finalize_block_capture
 from .v2.block_learning import apply_approved_learning_rules, load_approved_learning_rules, write_feedback_learning_payload
@@ -98,6 +99,16 @@ def build_parser() -> argparse.ArgumentParser:
     finalize_blocks.add_argument("--confirm-reviewed", action="store_true")
     finalize_blocks.add_argument("--out", default="artifacts/research-os-v2-block-capture-finalized.json")
     finalize_blocks.set_defaults(func=cmd_finalize_block_capture)
+
+    backfill_image_text = subcommands.add_parser("backfill-block-image-text", help="Fill image_text and Template_image_text for existing Notion block rows")
+    backfill_image_text.add_argument("--category-name", required=True)
+    backfill_image_text.add_argument("--notion-database-id", default=os.getenv("COMPETITOR_BLOCK_DB_ID", ""))
+    backfill_image_text.add_argument("--artifact", action="append", default=[])
+    backfill_image_text.add_argument("--confirm-update", action="store_true")
+    backfill_image_text.add_argument("--limit", type=int)
+    backfill_image_text.add_argument("--concurrency", type=int, default=1)
+    backfill_image_text.add_argument("--out", default="artifacts/research-os-v2-block-image-text-backfill.json")
+    backfill_image_text.set_defaults(func=cmd_backfill_block_image_text)
     return parser
 
 
@@ -275,6 +286,35 @@ def cmd_finalize_block_capture(args: argparse.Namespace) -> int:
             notion=NotionClient(token),
             database_id=args.notion_database_id,
             confirm_reviewed=args.confirm_reviewed,
+            out_path=args.out,
+        )
+    except RuntimeError as error:
+        raise SystemExit(str(error)) from error
+    print(args.out)
+    return 0
+
+
+def cmd_backfill_block_image_text(args: argparse.Namespace) -> int:
+    if not args.confirm_update:
+        raise SystemExit("--confirm-update is required before updating existing Notion pages")
+    token = os.getenv("NOTION_API_KEY")
+    if not token:
+        raise SystemExit("NOTION_API_KEY is required")
+    if not os.getenv("OPENAI_API_KEY"):
+        raise SystemExit("OPENAI_API_KEY is required")
+    if not args.notion_database_id:
+        raise SystemExit("COMPETITOR_BLOCK_DB_ID or --notion-database-id is required")
+    if not args.artifact:
+        raise SystemExit("At least one --artifact is required")
+    try:
+        backfill_block_image_text(
+            notion=NotionClient(token),
+            database_id=args.notion_database_id,
+            category_name=args.category_name,
+            artifact_paths=args.artifact,
+            confirm_update=args.confirm_update,
+            limit=args.limit,
+            concurrency=args.concurrency,
             out_path=args.out,
         )
     except RuntimeError as error:

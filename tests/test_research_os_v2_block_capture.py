@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from research_os.cli import build_parser
+from research_os.v2.block_backfill import backfill_block_image_text
 from research_os.v2.block_finalize import finalize_block_capture
 from research_os.v2.block_image_text import apply_image_text_prompts
 from research_os.v2.block_capture import (
@@ -121,6 +122,9 @@ class FakeBlockNotion:
     def __init__(self) -> None:
         self.created_pages: list[dict] = []
         self.uploaded_paths: list[str] = []
+        self.updated_pages: list[dict] = []
+        self.appended_children: list[dict] = []
+        self.query_results: list[dict] = []
 
     def retrieve_database(self, database_id: str) -> dict:
         return {"data_sources": [{"id": "ds-test"}], "properties": {"名前": {"title": {}}}}
@@ -139,6 +143,17 @@ class FakeBlockNotion:
         page_id = f"page-{len(self.created_pages) + 1}"
         self.created_pages.append({"id": page_id, "data_source_id": data_source_id, "properties": properties, "children": children or []})
         return {"id": page_id}
+
+    def query_data_source(self, data_source_id: str, payload=None) -> dict:
+        return {"results": self.query_results, "has_more": False}
+
+    def update_page(self, page_id: str, properties: dict) -> dict:
+        self.updated_pages.append({"id": page_id, "properties": properties})
+        return {"id": page_id}
+
+    def append_block_children(self, block_id: str, children: list[dict]) -> dict:
+        self.appended_children.append({"id": block_id, "children": children})
+        return {"results": children}
 
 
 class BlockCaptureHeuristicsTest(unittest.TestCase):
@@ -2058,6 +2073,134 @@ class FinalizeBlockCaptureTest(unittest.TestCase):
                 )
 
 
+class BackfillBlockImageTextTest(unittest.TestCase):
+    def test_backfill_updates_existing_page_with_generated_image_text(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            image_path = root / "block-001.png"
+            image_path.write_bytes(b"fake image bytes")
+            artifact_path = root / "capture.json"
+            artifact_path.write_text(
+                json.dumps(
+                    {
+                        "run": {
+                            "run_id": "run-test",
+                            "blocks": [
+                                {
+                                    "name": "Example 001",
+                                    "source_url": "https://example.com/",
+                                    "domain": "example.com",
+                                    "page_title": "Example",
+                                    "run_id": "run-test",
+                                    "viewport": "mobile-390",
+                                    "order": 1,
+                                    "major_category": "ファーストビュー",
+                                    "detail_label": "ファーストビュー結論",
+                                    "screenshot_path": str(image_path),
+                                    "structure_memo": "selector=hero",
+                                    "image_prompt": "",
+                                    "prompt_state": "未生成",
+                                    "confidence": "高",
+                                    "extracted_at": "2026-06-23T00:00:00+00:00",
+                                    "clip": {"x": 0, "y": 0, "width": 390, "height": 390},
+                                    "selector": "body > section.hero",
+                                    "status": "取得済み",
+                                }
+                            ],
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            notion = FakeBlockNotion()
+            notion.query_results = [
+                {
+                    "id": "page-existing",
+                    "properties": {
+                        "名前": {"title": [{"plain_text": "Example 001"}]},
+                        "元URL": {"url": "https://example.com/"},
+                        "ドメイン": {"rich_text": [{"plain_text": "example.com"}]},
+                        "Run ID": {"rich_text": [{"plain_text": "run-test"}]},
+                        "表示幅": {"select": {"name": "mobile-390"}},
+                        "ブロック順": {"number": 1},
+                        "ブロック大分類": {"select": {"name": "ファーストビュー"}},
+                        "詳細ラベル": {"select": {"name": "ファーストビュー結論"}},
+                        "構造メモ": {"rich_text": [{"plain_text": "selector=hero"}]},
+                        "画像生成プロンプト": {"rich_text": []},
+                        "image_text": {"rich_text": []},
+                        "Template_image_text": {"rich_text": []},
+                        "プロンプト状態": {"select": {"name": "未生成"}},
+                        "信頼度": {"select": {"name": "高"}},
+                        "抽出日時": {"date": {"start": "2026-06-23T00:00:00+00:00"}},
+                        "スクショ範囲": {"rich_text": [{"plain_text": '{"x":0,"y":0,"width":390,"height":390}'}]},
+                        "ステータス": {"select": {"name": "取得済み"}},
+                    },
+                }
+            ]
+
+            result = backfill_block_image_text(
+                notion=notion,
+                database_id="db-test",
+                category_name="マウスピース矯正",
+                artifact_paths=[artifact_path],
+                confirm_update=True,
+                client=FakeImageTextClient(),
+            )
+
+            self.assertEqual(result["updated_count"], 1)
+            self.assertEqual(result["skipped_count"], 0)
+            updated = notion.updated_pages[0]["properties"]
+            self.assertIn('"basic"', _rich_text_plain(updated["image_text"]))
+            self.assertIn("{サービス名}", _rich_text_plain(updated["Template_image_text"]))
+            self.assertEqual(updated["プロンプト状態"]["select"]["name"], "生成済み")
+            appended_text = "\n".join(_child_plain_text(child) for child in notion.appended_children[0]["children"])
+            self.assertIn("image_text", appended_text)
+            self.assertIn("Template_image_text", appended_text)
+
+    def test_backfill_requires_explicit_update_confirmation(self):
+        with self.assertRaisesRegex(RuntimeError, "confirm-update"):
+            backfill_block_image_text(
+                notion=FakeBlockNotion(),
+                database_id="db-test",
+                category_name="結婚相談所",
+                artifact_paths=[],
+                confirm_update=False,
+                client=FakeImageTextClient(),
+            )
+
+    def test_backfill_skips_rows_without_matching_local_screenshot(self):
+        notion = FakeBlockNotion()
+        notion.query_results = [
+            {
+                "id": "page-existing",
+                "properties": {
+                    "名前": {"title": [{"plain_text": "Missing"}]},
+                    "元URL": {"url": "https://example.com/"},
+                    "ドメイン": {"rich_text": [{"plain_text": "example.com"}]},
+                    "Run ID": {"rich_text": [{"plain_text": "run-test"}]},
+                    "ブロック順": {"number": 1},
+                    "ステータス": {"select": {"name": "取得済み"}},
+                    "image_text": {"rich_text": []},
+                    "Template_image_text": {"rich_text": []},
+                },
+            }
+        ]
+
+        result = backfill_block_image_text(
+            notion=notion,
+            database_id="db-test",
+            category_name="結婚相談所",
+            artifact_paths=[],
+            confirm_update=True,
+            client=FakeImageTextClient(),
+        )
+
+        self.assertEqual(result["updated_count"], 0)
+        self.assertEqual(result["skipped_count"], 1)
+        self.assertEqual(notion.updated_pages, [])
+
+
 class BlockPromptingTest(unittest.TestCase):
     def test_analyze_blocks_marks_prompt_unavailable_when_openai_is_disabled(self):
         block = CapturedBlock(
@@ -2151,6 +2294,36 @@ class CaptureBlocksCliTest(unittest.TestCase):
         self.assertEqual(args.notion_database_id, "db-test")
         self.assertEqual(args.category_name, "マウスピース矯正")
         self.assertTrue(args.confirm_reviewed)
+
+    def test_parser_accepts_backfill_block_image_text_command(self):
+        args = build_parser().parse_args(
+            [
+                "backfill-block-image-text",
+                "--notion-database-id",
+                "db-test",
+                "--category-name",
+                "マウスピース矯正",
+                "--artifact",
+                "artifacts/capture-a.json",
+                "--artifact",
+                "artifacts/capture-b.json",
+                "--confirm-update",
+                "--limit",
+                "3",
+                "--concurrency",
+                "4",
+                "--out",
+                "artifacts/backfill.json",
+            ]
+        )
+
+        self.assertEqual(args.command, "backfill-block-image-text")
+        self.assertEqual(args.notion_database_id, "db-test")
+        self.assertEqual(args.category_name, "マウスピース矯正")
+        self.assertEqual(args.artifact, ["artifacts/capture-a.json", "artifacts/capture-b.json"])
+        self.assertTrue(args.confirm_update)
+        self.assertEqual(args.limit, 3)
+        self.assertEqual(args.concurrency, 4)
 
 
 if __name__ == "__main__":

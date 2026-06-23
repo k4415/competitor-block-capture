@@ -65,6 +65,21 @@ python3 -m research_os learn-block-feedback \
 
 `pending_rules.json` を確認し、次回から自動適用してよいものだけ `learning/approved_rules.json` に移してください。
 
+## 既存DB行の image_text / Template_image_text を後追い補完
+
+過去にNotionへ保存済みの行へ、あとから `image_text` と `Template_image_text` を埋める場合に使います。Notion上の `Run ID`、`ドメイン`、`ブロック順` と、ローカルartifact内のスクリーンショットを突合して、既存ページを更新します。
+
+```bash
+python3 -m research_os backfill-block-image-text \
+  --category-name マウスピース矯正 \
+  --artifact artifacts/block-capture-dry-run.json \
+  --confirm-update \
+  --concurrency 4 \
+  --out artifacts/block-image-text-backfill.json
+```
+
+`--confirm-update` は既存Notionページを更新する明示フラグです。`OPENAI_API_KEY`、`NOTION_API_KEY`、`COMPETITOR_BLOCK_DB_ID` が必要です。
+
 ## テスト
 
 ```bash

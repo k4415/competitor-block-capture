@@ -139,6 +139,12 @@ def block_page_children(block: CapturedBlock, *, file_upload_id: str | None) -> 
     ]:
         if body:
             children.append(_paragraph(f"{title}: {body}"))
+    children.extend(block_image_text_children(block))
+    return children
+
+
+def block_image_text_children(block: CapturedBlock) -> list[dict[str, Any]]:
+    children: list[dict[str, Any]] = []
     for title, body in [
         ("image_text", block.image_text),
         ("Template_image_text", block.template_image_text),

@@ -58,6 +58,14 @@ class NotionClient:
         page_id = normalize_notion_id(page_id)
         return self._request("PATCH", f"/pages/{page_id}", {"in_trash": True})
 
+    def update_page(self, page_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+        page_id = normalize_notion_id(page_id)
+        return self._request("PATCH", f"/pages/{page_id}", {"properties": properties})
+
+    def append_block_children(self, block_id: str, children: list[dict[str, Any]]) -> dict[str, Any]:
+        block_id = normalize_notion_id(block_id)
+        return self._request("PATCH", f"/blocks/{block_id}/children", {"children": children})
+
     def create_page(self, data_source_id: str, properties: dict[str, Any], children: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "parent": {"type": "data_source_id", "data_source_id": data_source_id},

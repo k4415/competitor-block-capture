@@ -14,6 +14,7 @@
 - ユーザーからのフィードバックを次回以降の学習ルール候補として保存する
 - dry-runでローカル確認し、ユーザーOK後にNotion画像DBへ保存する
 - 承認済み画像から、再生成用の詳細プロンプト `image_text` と汎用テンプレート `Template_image_text` を作る
+- 既存DB行に対しても、ローカルartifactの画像を使って `image_text` / `Template_image_text` を後追い補完する
 
 ## 全体像
 
@@ -269,6 +270,17 @@ python3 -m research_os finalize-block-capture \
 
 `finalize-block-capture` は、dry-runで作成された画像をユーザーが確認してOKを出した後に実行します。この段階では `OPENAI_API_KEY` が必須です。
 
+既存DB行の後追い補完:
+
+```bash
+python3 -m research_os backfill-block-image-text \
+  --category-name マウスピース矯正 \
+  --artifact artifacts/block-capture-dry-run.json \
+  --confirm-update \
+  --concurrency 4 \
+  --out artifacts/block-image-text-backfill.json
+```
+
 フィードバック学習:
 
 ```bash
@@ -286,6 +298,7 @@ python3 -m research_os learn-block-feedback \
 - 区切りが粗い/細かい: `run.review_warnings` と `run.reference_review` を確認してください。
 - AI補助が動かない: `OPENAI_API_KEY` が設定されているか確認してください。未設定でも切り出し自体は動きます。
 - 承認後保存が止まる: `finalize-block-capture` には `--confirm-reviewed` と `OPENAI_API_KEY` が必要です。
+- 後追い補完で更新されない: `backfill-block-image-text` の `--artifact` が、Notion行の `Run ID` / `ドメイン` / `ブロック順` と対応しているか確認してください。
 - 参照レビューが `no_reference` になる: `--reference-review`、`NOTION_API_KEY`、`COMPETITOR_BLOCK_DB_ID`、対象DBの共有設定を確認してください。
 
 詳しい導入手順は [SETUP.md](SETUP.md)、日常運用は [OPERATIONS.md](OPERATIONS.md) を見てください。
